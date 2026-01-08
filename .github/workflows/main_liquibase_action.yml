@@ -4,10 +4,10 @@ on:
   workflow_dispatch:
     inputs:
       environment:
-        description: Target environment (cdt|qa|eyt|preprod|prod)
+        description: Target environment (local|prod)
         required: true
         type: choice
-        options: [cdt, qa, eyt, preprod, prod]
+        options: [local, prod]
       database:
         description: Target database (logical name used to build JDBC URL)
         required: true
@@ -45,7 +45,7 @@ jobs:
   update:
     name: Apply Changes
     runs-on: ubuntu-latest
-    environment: ${{ inputs.environment || 'cdt' }}
+    environment: ${{ inputs.environment || 'local' }}
     timeout-minutes: 30
 
     steps:
@@ -76,33 +76,10 @@ jobs:
         id: secrets-map
         run: |
           case "${{ steps.env-paths.outputs.env_target }}" in
-            cdt)
-              echo "db_url=jdbc:postgresql://pgsazewdanl001intercab.postgres.database.azure.com:6432/psdazewdanl001${{ inputs.database }}" >> $GITHUB_OUTPUT
-              echo "db_user=${{ secrets.DB_USER_CDT }}" >> $GITHUB_OUTPUT
-              echo "db_pass=${{ secrets.DB_PASS_CDT }}" >> $GITHUB_OUTPUT
-              ;;
-            qa)
-              echo "db_url=jdbc:postgresql://pgsazewqanl001intercab.postgres.database.azure.com:6432/psdazewqanl001${{ inputs.database }}" >> $GITHUB_OUTPUT
-              echo "db_user=${{ secrets.DB_USER_QA }}" >> $GITHUB_OUTPUT
-              echo "db_pass=${{ secrets.DB_PASS_QA }}" >> $GITHUB_OUTPUT
-              ;;
-            eyt)
-              if [ "${{ inputs.restored-prod-instance }}" = "true" ]; then
-                echo "db_url=jdbc:postgresql://pgsazewpanl002intercab.postgres.database.azure.com:6432/psdazewpanl001${{ inputs.database }}" >> $GITHUB_OUTPUT
-              else
-                echo "db_url=jdbc:postgresql://pgsazewpanl002intercab.postgres.database.azure.com:6432/psdazewpanl002${{ inputs.database }}" >> $GITHUB_OUTPUT
-              fi
-              echo "db_user=${{ secrets.DB_USER_EYT }}" >> $GITHUB_OUTPUT
-              echo "db_pass=${{ secrets.DB_PASS_EYT }}" >> $GITHUB_OUTPUT
-              ;;
-            preprod)
-              if [ "${{ inputs.restored-prod-instance }}" = "true" ]; then
-                echo "db_url=jdbc:postgresql://pgsazewranl001intercab.postgres.database.azure.com:6432/psdazewpanl001${{ inputs.database }}" >> $GITHUB_OUTPUT
-              else
-                echo "db_url=jdbc:postgresql://pgsazewranl001intercab.postgres.database.azure.com:6432/psdazewranl001${{ inputs.database }}" >> $GITHUB_OUTPUT
-              fi
-              echo "db_user=${{ secrets.DB_USER_PREPROD }}" >> $GITHUB_OUTPUT
-              echo "db_pass=${{ secrets.DB_PASS_PREPROD }}" >> $GITHUB_OUTPUT
+            local)
+              echo "db_url=jdbc:postgresql://localhost:5432/${{ inputs.database }}" >> $GITHUB_OUTPUT
+              echo "db_user=${{ secrets.DB_USER_LOCAL }}" >> $GITHUB_OUTPUT
+              echo "db_pass=${{ secrets.DB_PASS_LOCAL }}" >> $GITHUB_OUTPUT
               ;;
             prod)
               echo "db_url=jdbc:postgresql://pgsazewpanl001intercab.postgres.database.azure.com:6432/psdazewpanl001${{ inputs.database }}" >> $GITHUB_OUTPUT
