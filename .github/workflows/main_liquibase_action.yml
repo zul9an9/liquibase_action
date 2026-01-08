@@ -1,0 +1,192 @@
+name: Liquibase - Update
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Target environment (cdt|qa|eyt|preprod|prod)
+        required: true
+        type: choice
+        options: [cdt, qa, eyt, preprod, prod]
+      database:
+        description: Target database (logical name used to build JDBC URL)
+        required: true
+      database-folder-name:
+        description: Optional override for changelog folder name if it differs from the database input (e.g., legacy folder structure). If blank, database is used.
+        required: false
+      restored-prod-instance:
+        description: Optional. Set to true only when migrating a restored instance from production. This affects the database name prefix in the JDBC URL for eyt and preprod environments. Leave false for normal operations.
+        required: false
+        type: boolean
+        default: false
+      runDiff:
+        description: Also run a diff (schema snapshot) after update
+        required: false
+        default: true
+        type: boolean
+      dryRun:
+        description: Generate SQL only (no actual update)
+        required: false
+        type: boolean
+      default_schema:
+        description: Default schema to use (e.g., public)
+        default: public
+        required: true
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: liquibase-${{ github.ref }}-${{ inputs.environment || 'push' }}
+  cancel-in-progress: false
+
+jobs:
+  update:
+    name: Apply Changes
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment || 'cdt' }}
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Determine Paths for Environment
+        id: env-paths
+        run: |
+          # Derive folder name: use database-folder-name if provided, else database
+          folder_name="${{ inputs.database-folder-name != '' && inputs.database-folder-name || inputs.database }}"
+          case "${{ inputs.environment }}" in
+            cdt|qa)
+              echo "changelog_path=intercab_liquibase/env_dev/db_${folder_name}/changelog" >> $GITHUB_OUTPUT
+              ;;
+            eyt|preprod|prod)
+              echo "changelog_path=intercab_liquibase/env_prd/db_${folder_name}/changelog" >> $GITHUB_OUTPUT
+              ;;
+            *)
+              echo "Unknown environment" >&2
+              exit 1
+              ;;
+          esac
+          echo "env_target=${{ inputs.environment }}" >> $GITHUB_OUTPUT
+          echo "schema=${{ inputs.default_schema }}" >> $GITHUB_OUTPUT
+
+      - name: Map Secrets
+        id: secrets-map
+        run: |
+          case "${{ steps.env-paths.outputs.env_target }}" in
+            cdt)
+              echo "db_url=jdbc:postgresql://pgsazewdanl001intercab.postgres.database.azure.com:6432/psdazewdanl001${{ inputs.database }}" >> $GITHUB_OUTPUT
+              echo "db_user=${{ secrets.DB_USER_CDT }}" >> $GITHUB_OUTPUT
+              echo "db_pass=${{ secrets.DB_PASS_CDT }}" >> $GITHUB_OUTPUT
+              ;;
+            qa)
+              echo "db_url=jdbc:postgresql://pgsazewqanl001intercab.postgres.database.azure.com:6432/psdazewqanl001${{ inputs.database }}" >> $GITHUB_OUTPUT
+              echo "db_user=${{ secrets.DB_USER_QA }}" >> $GITHUB_OUTPUT
+              echo "db_pass=${{ secrets.DB_PASS_QA }}" >> $GITHUB_OUTPUT
+              ;;
+            eyt)
+              if [ "${{ inputs.restored-prod-instance }}" = "true" ]; then
+                echo "db_url=jdbc:postgresql://pgsazewpanl002intercab.postgres.database.azure.com:6432/psdazewpanl001${{ inputs.database }}" >> $GITHUB_OUTPUT
+              else
+                echo "db_url=jdbc:postgresql://pgsazewpanl002intercab.postgres.database.azure.com:6432/psdazewpanl002${{ inputs.database }}" >> $GITHUB_OUTPUT
+              fi
+              echo "db_user=${{ secrets.DB_USER_EYT }}" >> $GITHUB_OUTPUT
+              echo "db_pass=${{ secrets.DB_PASS_EYT }}" >> $GITHUB_OUTPUT
+              ;;
+            preprod)
+              if [ "${{ inputs.restored-prod-instance }}" = "true" ]; then
+                echo "db_url=jdbc:postgresql://pgsazewranl001intercab.postgres.database.azure.com:6432/psdazewpanl001${{ inputs.database }}" >> $GITHUB_OUTPUT
+              else
+                echo "db_url=jdbc:postgresql://pgsazewranl001intercab.postgres.database.azure.com:6432/psdazewranl001${{ inputs.database }}" >> $GITHUB_OUTPUT
+              fi
+              echo "db_user=${{ secrets.DB_USER_PREPROD }}" >> $GITHUB_OUTPUT
+              echo "db_pass=${{ secrets.DB_PASS_PREPROD }}" >> $GITHUB_OUTPUT
+              ;;
+            prod)
+              echo "db_url=jdbc:postgresql://pgsazewpanl001intercab.postgres.database.azure.com:6432/psdazewpanl001${{ inputs.database }}" >> $GITHUB_OUTPUT
+              echo "db_user=${{ secrets.DB_USER_PROD }}" >> $GITHUB_OUTPUT
+              echo "db_pass=${{ secrets.DB_PASS_PROD }}" >> $GITHUB_OUTPUT
+              ;;
+            *)
+              echo "Unknown environment" >&2
+              exit 1
+              ;;
+          esac
+
+      - name: Setup Liquibase
+        uses: liquibase/setup-liquibase@v2
+        with:
+          version: 5.0.1
+          edition: oss
+
+      # Install PostgreSQL driver using LPM (Required for versions 5.0+)
+      - name: Install PostgreSQL Driver
+        run: liquibase lpm add postgresql --global
+
+      - name: (Dry Run) Generate SQL (if requested)
+        if: ${{ inputs.dryRun == 'true' }}
+        run: |
+          liquibase \
+            --log-level=INFO \
+            --search-path="${{ steps.env-paths.outputs.changelog_path }}" \
+            --changeLogFile="changelog.xml" \
+            --url="${{ steps.secrets-map.outputs.db_url }}" \
+            --username="${{ steps.secrets-map.outputs.db_user }}" \
+            --password="${{ steps.secrets-map.outputs.db_pass }}" \
+            --defaultSchemaName="${{ steps.env-paths.outputs.schema }}" \
+            update-sql > update-${{ steps.env-paths.outputs.env_target }}.sql
+
+      - name: Upload Dry Run SQL
+        if: ${{ inputs.dryRun == 'true' }}
+        uses: actions/upload-artifact@v5
+        with:
+          name: update-sql-${{ steps.env-paths.outputs.env_target }}
+          path: update-${{ steps.env-paths.outputs.env_target }}.sql
+
+      - name: Execute Update
+        if: ${{ inputs.dryRun != 'true' }}
+        run: |
+          liquibase \
+            --log-level=INFO \
+            --search-path="${{ steps.env-paths.outputs.changelog_path }}" \
+            --changeLogFile="changelog.xml" \
+            --url="${{ steps.secrets-map.outputs.db_url }}" \
+            --username="${{ steps.secrets-map.outputs.db_user }}" \
+            --password="${{ steps.secrets-map.outputs.db_pass }}" \
+            --defaultSchemaName="${{ steps.env-paths.outputs.schema }}" \
+            update
+
+      - name: Post-Update Status
+        if: ${{ inputs.dryRun != 'true' }}
+        run: |
+          liquibase \
+            --log-level=INFO \
+            --search-path="${{ steps.env-paths.outputs.changelog_path }}" \
+            --changeLogFile="changelog.xml" \
+            --url="${{ steps.secrets-map.outputs.db_url }}" \
+            --username="${{ steps.secrets-map.outputs.db_user }}" \
+            --password="${{ steps.secrets-map.outputs.db_pass }}" \
+            --defaultSchemaName="${{ steps.env-paths.outputs.schema }}" \
+            status --verbose
+
+      - name: Diff (Optional)
+        if: ${{ inputs.runDiff == 'true' && inputs.dryRun != 'true' }}
+        run: |
+          liquibase \
+            --log-level=INFO \
+            --search-path="${{ steps.env-paths.outputs.changelog_path }}" \
+            --changeLogFile="changelog.xml" \
+            --url="${{ steps.secrets-map.outputs.db_url }}" \
+            --username="${{ steps.secrets-map.outputs.db_user }}" \
+            --password="${{ steps.secrets-map.outputs.db_pass }}" \
+            --defaultSchemaName="${{ steps.env-paths.outputs.schema }}" \
+            diff > diff-${{ steps.env-paths.outputs.env_target }}.txt
+
+      - name: Upload Diff (Optional)
+        if: ${{ inputs.runDiff == 'true' && inputs.dryRun != 'true' }}
+        uses: actions/upload-artifact@v5
+        with:
+          name: diff-${{ steps.env-paths.outputs.env_target }}
+          path: diff-${{ steps.env-paths.outputs.env_target }}.txt
